@@ -1416,6 +1416,7 @@ jobs:
           fi
 
           make O=out "${MAKE_ARGS[@]}" olddefconfig --no-print-directory
+          make -j"$(nproc --all)" O=out "${MAKE_ARGS[@]}" security/selinux/
           make -j"$(nproc --all)" O=out "${MAKE_ARGS[@]}" drivers/kernelsu/ksu.o
           llvm-nm out/drivers/kernelsu/ksu.o > out/ksu-symbols.txt
           grep -q ' T ksu_handle_post_execveat_sucompat$' out/ksu-symbols.txt
