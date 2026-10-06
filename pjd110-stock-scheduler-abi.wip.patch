@@ -1,0 +1,119 @@
+diff --git a/include/linux/sched.h b/include/linux/sched.h
+index f50c622..853ed6d 100644
+--- a/include/linux/sched.h
++++ b/include/linux/sched.h
+@@ -1555,12 +1555,12 @@ struct task_struct {
+ #endif
+ 	ANDROID_KABI_USE(1, unsigned int saved_state);
+ #ifdef CONFIG_SLIM_SCHED
+-	ANDROID_KABI_USE(2, unsigned long sched_prop);
+-	ANDROID_KABI_USE(3, struct sched_ext_entity *scx);
++	/* PJD110 16.0.8.300 vendor modules read scx from reserve 2. */
++	ANDROID_KABI_USE(2, struct sched_ext_entity *scx);
+ #else
+ 	ANDROID_KABI_RESERVE(2);
+-	ANDROID_KABI_RESERVE(3);
+ #endif
++	ANDROID_KABI_RESERVE(3);
+ 	ANDROID_KABI_RESERVE(4);
+ 	ANDROID_KABI_RESERVE(5);
+ 	ANDROID_KABI_RESERVE(6);
+@@ -1952,14 +1952,14 @@ static inline int task_nice(const struct task_struct *p)
+ #define SCHED_PROP_DEADLINE_LEVEL9 (9)  /* 128ms */
+ static inline long sched_prop_get_deadline_dsq_id(struct task_struct *p)
+ {
+-	return (p->sched_prop & SCHED_PROP_DEADLINE_MASK) - 1;
++	return ((p->scx ? p->scx->sched_prop : 0) & SCHED_PROP_DEADLINE_MASK) - 1;
+ }
+ 
+ #define SCHED_PROP_TOP_THREAD_SHIFT (8)
+ #define SCHED_PROP_TOP_THREAD_MASK  (0xf << SCHED_PROP_TOP_THREAD_SHIFT)
+ static inline int sched_prop_get_top_thread_id(struct task_struct *p)
+ {
+-	return (p->sched_prop & SCHED_PROP_TOP_THREAD_MASK) >> SCHED_PROP_TOP_THREAD_SHIFT;
++	return ((p->scx ? p->scx->sched_prop : 0) & SCHED_PROP_TOP_THREAD_MASK) >> SCHED_PROP_TOP_THREAD_SHIFT;
+ }
+ 
+ #endif
+diff --git a/include/linux/sched/ext.h b/include/linux/sched/ext.h
+index b737a00..6fd8ac3 100755
+--- a/include/linux/sched/ext.h
++++ b/include/linux/sched/ext.h
+@@ -510,6 +510,8 @@ struct scx_dispatch_q {
+ 	u64			id;
+ 	struct llist_node	free_node;
+ 	struct rcu_head		rcu;
++	u64			last_consume_at;
++	bool			is_timeout;
+ };
+ 
+ /* scx_entity.flags */
+@@ -634,7 +636,12 @@ struct sched_ext_entity {
+ 	/* cold fields */
+ 	struct list_head	tasks_node;
+ 	struct task_struct	*task;
++	unsigned long		sched_prop;
++	unsigned long		top_task_prop;
+ 	struct scx_sched_task_stats sts;
++	unsigned long		running_at;
++	int			gdsq_idx;
++	int			dsq_sync_ux;
+ };
+ 
+ void sched_ext_free(struct task_struct *p);
+diff --git a/kernel/sched/build_policy.c b/kernel/sched/build_policy.c
+index 005025f..9dea46c 100644
+--- a/kernel/sched/build_policy.c
++++ b/kernel/sched/build_policy.c
+@@ -36,6 +36,21 @@
+ #include "sched.h"
+ #include "smp.h"
+ 
++#ifdef CONFIG_SLIM_SCHED
++/* Layouts measured from PJD110_16.0.8.300 stock BTF. */
++static_assert(sizeof(struct task_struct) == 4800);
++static_assert(offsetof(struct task_struct, scx) == 3608);
++static_assert(sizeof(struct sched_ext_entity) == 264);
++static_assert(offsetof(struct sched_ext_entity, sched_prop) == 168);
++static_assert(offsetof(struct sched_ext_entity, top_task_prop) == 176);
++static_assert(offsetof(struct sched_ext_entity, sts) == 184);
++static_assert(offsetof(struct sched_ext_entity, running_at) == 248);
++static_assert(offsetof(struct sched_ext_entity, gdsq_idx) == 256);
++static_assert(offsetof(struct sched_ext_entity, dsq_sync_ux) == 260);
++static_assert(sizeof(struct scx_dispatch_q) == 96);
++static_assert(sizeof(struct rq) == 3840);
++#endif
++
+ #include "autogroup.h"
+ #include "stats.h"
+ #include "pelt.h"
+diff --git a/kernel/sched/debug.c b/kernel/sched/debug.c
+index fc6a53b..6b2c10d 100644
+--- a/kernel/sched/debug.c
++++ b/kernel/sched/debug.c
+@@ -959,7 +959,7 @@ void proc_sched_show_task(struct task_struct *p, struct pid_namespace *ns,
+ 		"---------------------------------------------------------"
+ 		"----------\n");
+ #ifdef CONFIG_SLIM_SCHED
+-	SEQ_printf(m, "p->sched_prop:0x%lx\n", p->sched_prop);
++	SEQ_printf(m, "p->sched_prop:0x%lx\n", p->scx ? p->scx->sched_prop : 0);
+ #endif
+ 
+ #define P_SCHEDSTAT(F)  __PS(#F, schedstat_val(p->stats.F))
+diff --git a/kernel/sched/ext.c b/kernel/sched/ext.c
+index 0ceb322..9594767 100755
+--- a/kernel/sched/ext.c
++++ b/kernel/sched/ext.c
+@@ -2297,7 +2297,11 @@ void scx_pre_fork(struct task_struct *p)
+ 	p->scx->runnable_at = INITIAL_JIFFIES;
+ 	p->scx->slice = SCX_SLICE_DFL;
+ 	p->scx->task = p;
+-	p->sched_prop = 0;
++	p->scx->sched_prop = 0;
++	p->scx->top_task_prop = 0;
++	p->scx->running_at = 0;
++	p->scx->gdsq_idx = 0;
++	p->scx->dsq_sync_ux = 0;
+ 
+ 	/*
+ 	 * BPF scheduler enable/disable paths want to be able to iterate and
