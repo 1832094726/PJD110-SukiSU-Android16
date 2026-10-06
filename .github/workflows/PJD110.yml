@@ -685,6 +685,7 @@ jobs:
           if [[ -n "$MANUAL_HASH" ]]; then
             git fetch origin "$KSU_BUILTIN_BRANCH" --depth=50
             git checkout "$MANUAL_HASH"
+            test "$(git rev-parse HEAD)" = "$MANUAL_HASH"
             SHORT_HASH=${MANUAL_HASH:0:8}
           fi
 
@@ -1049,10 +1050,9 @@ jobs:
           set_config "CONFIG_KSU=y"
 
           # KPM配置
-          if [ "${{ github.event.inputs.KPM }}" = "KPM" ] || [ "${{ github.event.inputs.KPM }}" = "N/A" ]; then
+          if [ "${{ github.event.inputs.KPM }}" = "KPM" ]; then
             set_config "CONFIG_KPM=y"
-          fi
-          if [ "${{ github.event.inputs.KPM }}" = "KPN" ]; then
+          else
             set_config "CONFIG_KPM=n"
           fi
 
