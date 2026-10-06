@@ -689,6 +689,10 @@ jobs:
             SHORT_HASH=${MANUAL_HASH:0:8}
           fi
 
+          mkdir -p kernel/include
+          curl -fLsS https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/42d7fda3d787b7df90fc440a50bb9c8216a3fdef/kernel/include/arch.h -o kernel/include/arch.h
+          echo '21951ac6769665243ce5962a8e55a54d01c9738eff1c3d3babbdd6dd8563cbb9  kernel/include/arch.h' | sha256sum -c -
+
           KSU_VERSION_TAG=$(curl -fsSL https://api.github.com/repos/SukiSU-Ultra/SukiSU-Ultra/releases/latest \
             | grep '"tag_name":' | sed -E 's/.*"v?([^"]+)".*/\1/')
           if [[ -z "$KSU_VERSION_TAG" || "$(printf '%s\n' "$KSU_VERSION_TAG" "3.1.7" | sort -V | head -n1)" != "3.1.7" ]]; then
@@ -1381,7 +1385,7 @@ jobs:
             HOSTCC="$CC_WRAPPER"
             HOSTLD=ld.lld
             PAHOLE="$PAHOLE_BIN"
-            KCFLAGS="$KCFLAGS"
+            KCFLAGS="$KCFLAGS -D__ANDROID_COMMON_KERNEL__"
             KCPPFLAGS="$KCPPFLAGS"
           )
 
@@ -1412,6 +1416,9 @@ jobs:
           fi
 
           make O=out "${MAKE_ARGS[@]}" olddefconfig --no-print-directory
+          make -j"$(nproc --all)" O=out "${MAKE_ARGS[@]}" drivers/kernelsu/ksu.o
+          llvm-nm out/drivers/kernelsu/ksu.o > out/ksu-symbols.txt
+          grep -q ' T ksu_handle_post_execveat_sucompat$' out/ksu-symbols.txt
           make -j"$(nproc --all)" O=out "${MAKE_ARGS[@]}"
           ccache -s
 
